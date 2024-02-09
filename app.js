@@ -116,12 +116,14 @@ app.put('/api/books/:id', (req, res) => {
     } else {
       sql += ' ORDER BY id ASC';
     }
+
   
     // Fetch books based on the constructed SQL query
     db.all(sql, (err, books) => {
       if (err) {
         return res.status(500).json({ error: 'Internal Server Error' });
       }
+      print(books);
   
       // Return the list of books
       res.status(200).json({ books });
