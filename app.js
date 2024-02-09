@@ -235,7 +235,7 @@ app.put('/api/wallets/:wallet_id', (req, res) => {
     });
 });
 // Purchase Ticket
-// Purchase Ticket
+
 app.post('/api/tickets', (req, res) => {
     const { wallet_id, time_after, station_from, station_to } = req.body;
 
@@ -273,21 +273,44 @@ app.post('/api/tickets', (req, res) => {
                 return res.status(403).json({ message: `No ticket available for station: ${station_from} to station: ${station_to}` });
             }
 
-            // Generate ticket details
-            const ticket = {
-                ticket_id: generateTicketId(),
-                balance: walletBalance - totalFare,
-                wallet_id: wallet_id,
-                stations: generateStationsList(trains)
-            };
+            // Generate ticket ID
+            generateTicketID((err, ticketId) => {
+                if (err) {
+                    console.error('Error generating ticket ID:', err);
+                    return res.status(500).json({ message: 'Internal server error' });
+                }
+                
+                // Generate stations list
+                generateStationsList(trains, (err, stations) => {
+                    if (err) {
+                        console.error('Error generating stations list:', err);
+                        return res.status(500).json({ message: 'Internal server error' });
+                    }
 
-            // TODO: Deduct fare from wallet balance and update database
+                    // Generate ticket details
+                    const ticket = {
+                        ticket_id: ticketId,
+                        balance: walletBalance - totalFare,
+                        wallet_id: wallet_id,
+                        stations: stations
+                    };
 
-            // Return ticket details
-            res.status(201).json(ticket);
+                    // Store ticket details in the database
+                    db.run(`INSERT INTO Ticket (ticket_id, wallet_id, balance) VALUES (?, ?, ?)`, [ticketId, wallet_id, ticket.balance], (err) => {
+                        if (err) {
+                            console.error('Error storing ticket details:', err);
+                            return res.status(500).json({ message: 'Internal server error' });
+                        }
+                        
+                        // Return ticket details
+                        res.status(201).json(ticket);
+                    });
+                });
+            });
         });
     });
 });
+
 
 // Function to calculate ticket fare
 function calculateTicketFare(station_from, station_to) {
@@ -343,7 +366,7 @@ function generateTicketID(callback) {
 
 // Function to generate list of stations in order of visits
 function generateStationsList(trains, callback) {
-    let stationsList = [];
+    let stationsMap = new Map(); // Use a map to store unique stations
 
     // Iterate through each train to fetch its stops
     let completed = 0;
@@ -353,22 +376,25 @@ function generateStationsList(trains, callback) {
                 callback(err, null);
                 return;
             }
-            
-            // Add stops to the list
-            stationsList = stationsList.concat(stops.map(stop => {
-                return {
-                    station_id: stop.station_id,
-                    train_id: train.train_id,
-                    arrival_time: stop.arrival_time,
-                    departure_time: stop.departure_time
-                };
-            }));
+
+            // Add stops to the map
+            stops.forEach(stop => {
+                const key = `${stop.station_id}_${train.train_id}`; // Unique key for station and train combination
+                if (!stationsMap.has(key)) {
+                    stationsMap.set(key, {
+                        station_id: stop.station_id,
+                        train_id: train.train_id,
+                        arrival_time: stop.arrival_time,
+                        departure_time: stop.departure_time
+                    });
+                }
+            });
 
             // Check if all trains have been processed
             completed++;
             if (completed === trains.length) {
-                // Sort the stations list by departure time
-                stationsList.sort((a, b) => {
+                // Convert map values to array and sort by departure time
+                const stationsList = Array.from(stationsMap.values()).sort((a, b) => {
                     if (a.departure_time < b.departure_time) return -1;
                     if (a.departure_time > b.departure_time) return 1;
                     return 0;
@@ -380,6 +406,7 @@ function generateStationsList(trains, callback) {
         });
     });
 }
+
 
 
 
