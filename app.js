@@ -163,6 +163,29 @@ app.get('/api/wallets/:wallet_id', (req, res) => {
         });
     });
 });
+// Define the route handler for GET /api/stations
+app.get('/api/stations', (req, res) => {
+    // Query the database to retrieve all stations
+    db.all('SELECT * FROM Station ORDER BY station_id ASC', (err, rows) => {
+        if (err) {
+            console.error('Error retrieving stations:', err);
+            res.status(500).json({ error: 'Internal server error' });
+            return;
+        }
+
+        // Prepare the response model
+        const stations = rows.map(row => ({
+            station_id: row.station_id,
+            station_name: row.station_name,
+            longitude: row.longitude,
+            latitude: row.latitude
+        }));
+
+        // Return the list of stations
+        res.status(200).json({ stations: stations });
+    });
+});
+
 
 // Endpoint for adding wallet balance
 app.put('/api/wallets/:wallet_id', (req, res) => {
@@ -211,6 +234,155 @@ app.put('/api/wallets/:wallet_id', (req, res) => {
         });
     });
 });
+// Purchase Ticket
+// Purchase Ticket
+app.post('/api/tickets', (req, res) => {
+    const { wallet_id, time_after, station_from, station_to } = req.body;
+
+    // Validate request body
+    if (!wallet_id || !time_after || !station_from || !station_to) {
+        return res.status(400).json({ message: 'Missing required parameters' });
+    }
+
+    // Calculate ticket fare
+    let totalFare = calculateTicketFare(station_from, station_to);
+
+    // Check wallet balance
+    db.get(`SELECT balance FROM User WHERE user_id = ?`, [wallet_id], (err, row) => {
+        if (err) {
+            console.error('Error retrieving wallet balance:', err);
+            return res.status(500).json({ message: 'Internal server error' });
+        }
+
+        const walletBalance = row ? row.balance : 0;
+
+        // Check if wallet balance is sufficient
+        if (walletBalance < totalFare) {
+            const shortageAmount = totalFare - walletBalance;
+            return res.status(402).json({ message: `Recharge amount: ${shortageAmount} to purchase the ticket` });
+        }
+
+        // Find available trains
+        findAvailableTrains(station_from, station_to, time_after, (err, trains) => {
+            if (err) {
+                console.error('Error finding available trains:', err);
+                return res.status(500).json({ message: 'Internal server error' });
+            }
+
+            if (!trains.length) {
+                return res.status(403).json({ message: `No ticket available for station: ${station_from} to station: ${station_to}` });
+            }
+
+            // Generate ticket details
+            const ticket = {
+                ticket_id: generateTicketId(),
+                balance: walletBalance - totalFare,
+                wallet_id: wallet_id,
+                stations: generateStationsList(trains)
+            };
+
+            // TODO: Deduct fare from wallet balance and update database
+
+            // Return ticket details
+            res.status(201).json(ticket);
+        });
+    });
+});
+
+// Function to calculate ticket fare
+function calculateTicketFare(station_from, station_to) {
+    // Placeholder implementation for calculating fare based on stations
+    return Math.abs(station_to - station_from) * 10; // Fare calculation logic can be more complex
+}
+
+// Function to find available trains
+// Function to find available trains
+function findAvailableTrains(station_from, station_to, time_after, callback) {
+    const query = `
+        SELECT DISTINCT t.train_id, s.departure_time
+        FROM Train t
+        JOIN Stops s ON t.train_id = s.train_id
+        WHERE s.station_id >= ? AND s.station_id <= ?
+            AND s.departure_time >= ?
+    `;
+    const params = [station_from, station_to, time_after];
+
+    db.all(query, params, (err, rows) => {
+        if (err) {
+            callback(err);
+            return;
+        }
+
+        const availableTrains = rows.map(row => ({
+            train_id: row.train_id,
+            departure_time: row.departure_time
+        }));
+
+        callback(null, availableTrains);
+    });
+}
+db.run(`CREATE TABLE IF NOT EXISTS Ticket (
+    ticket_id INTEGER PRIMARY KEY,
+    wallet_id INTEGER NOT NULL,
+    balance INTEGER NOT NULL,
+    FOREIGN KEY(wallet_id) REFERENCES User(user_id)
+)`);
+
+// Function to generate ticket ID
+function generateTicketID(callback) {
+    db.get("SELECT MAX(ticket_id) AS max_id FROM Ticket", (err, row) => {
+        if (err) {
+            callback(err);
+            return;
+        }
+        const maxID = row.max_id || 0;
+        const ticketID = maxID + 1;
+        callback(null, ticketID);
+    });
+}
+
+// Function to generate list of stations in order of visits
+function generateStationsList(trains, callback) {
+    let stationsList = [];
+
+    // Iterate through each train to fetch its stops
+    let completed = 0;
+    trains.forEach(train => {
+        db.all('SELECT * FROM Stops WHERE train_id = ? ORDER BY departure_time ASC', [train.train_id], (err, stops) => {
+            if (err) {
+                callback(err, null);
+                return;
+            }
+            
+            // Add stops to the list
+            stationsList = stationsList.concat(stops.map(stop => {
+                return {
+                    station_id: stop.station_id,
+                    train_id: train.train_id,
+                    arrival_time: stop.arrival_time,
+                    departure_time: stop.departure_time
+                };
+            }));
+
+            // Check if all trains have been processed
+            completed++;
+            if (completed === trains.length) {
+                // Sort the stations list by departure time
+                stationsList.sort((a, b) => {
+                    if (a.departure_time < b.departure_time) return -1;
+                    if (a.departure_time > b.departure_time) return 1;
+                    return 0;
+                });
+
+                // Return the generated stations list
+                callback(null, stationsList);
+            }
+        });
+    });
+}
+
+
+
 app.listen(port, () => {
   console.log(`Server is running on http://localhost:${port}`);
 });
